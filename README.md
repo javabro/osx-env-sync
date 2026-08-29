@@ -1,80 +1,71 @@
 # osx-env-sync
 
-Synchronize OS X environment variables for command line and GUI applications from a single source
+Synchronize macOS environment variables for command line and GUI applications from a single source.
 
 ## Introduction
 
-On OS X, command line applications and GUI applications are treated differently. (Well this can be put in a more technically correct manner but this is what you experience from a user's point of view.) One fundamental difference is that although it's straightforward to feed command line applications with environment variables, it's not so for GUI applications. It's even harder to feed both types of applications from a single source of definitions. (Well, one particular *workaround* is launching GUI applications from command line.) Moreover, OS X's relevant means for setting up environment variables (or initializing programs in general) have been changing over time in consecutive releases which makes the situation worse. [Hundreds of topics at Stack Overflow](http://stackoverflow.com/search?q=environment-variables+osx) is the living proof of this *mess*.
+On macOS, command line applications and GUI applications are treated differently. It's straightforward to feed command line applications environment variables from your shell profile, but GUI applications are launched by the Dock/Finder and don't read shell profiles. **osx-env-sync** captures the environment of a login shell and publishes it to the user session with `launchctl setenv`, so GUI apps launched afterwards can see it.
 
-**osx-env-sync** provides a simple and effective solution for synchronizing environment variables for both command line and GUI applications from a single source. Unlike many other solutions/workarounds provided at Stack Overflow and many blogs, **osx-env-sync** is simple and works with the latest version of OS X. (Tested on version 10.10.5.)
+## Requirements
+
+- macOS ships everything needed: `/bin/zsh` and `/usr/bin/ruby`. No dependencies.
+- Your environment must live in your shell's startup files (e.g. `~/.zshrc` or `~/.zprofile`). The default donor is `/bin/zsh -i`, so both are sourced. Drop `-i` from `DONOR_SHELL` for a strict `.zprofile`-only capture.
+
+## Quick Start
+
+Run it straight from the repo (or any directory):
+
+```sh
+git clone <this-repo-url> && cd osx-env-sync
+chmod +x osx-env-sync
+./osx-env-sync install   # one-time: install the launch agent
+./osx-env-sync sync      # re-publish env now, e.g. after editing ~/.zprofile
+```
+
+To run it without the `./` prefix from anywhere, symlink or copy it to a directory on your `$PATH`:
+
+```sh
+mkdir -p ~/bin
+ln -sf "$PWD/osx-env-sync" ~/bin/osx-env-sync   # ~/bin must be on your $PATH
+osx-env-sync sync
+```
 
 ## Usage
 
-Make sure your `~/.bash_profile` has the necessary export statements. You can have more than one export statement for a variable and you can use variable substitution as well, in the same way you define environment variables as usual. Here is an example:
+Put `osx-env-sync` somewhere on your `$PATH` (e.g. `~/bin`) and make it executable, then:
 
-```
-export JAVA_HOME="$(/usr/libexec/java_home -v 1.8)"
-export GOPATH="$HOME/go"
-export PATH="$PATH:/usr/local/opt/go/libexec/bin:$GOPATH/bin"
-export PATH="/usr/local/opt/coreutils/libexec/gnubin:$PATH"
-export MANPATH="/usr/local/opt/coreutils/libexec/gnuman:$MANPATH"
-export PATH="$PATH:$HOME/bin"
+```sh
+osx-env-sync install     # install the launch agent (runs at login)
+osx-env-sync sync        # re-publish the environment now (e.g. after editing ~/.zprofile)
+osx-env-sync reinstall   # reinstall after changing the script itself
+osx-env-sync uninstall   # remove the launch agent
 ```
 
-Open your terminal and follow the steps below.
+Installation is persistent: the plist is written to `~/Library/LaunchAgents` and loaded with `launchctl bootstrap`, so it runs at every login.
 
-Download the launch agent:
+## Configuration
 
-`curl https://raw.githubusercontent.com/ersiner/osx-env-sync/master/osx-env-sync.plist -o ~/Library/LaunchAgents/osx-env-sync.plist`
+`DONOR_SHELL` selects the shell whose environment is captured (default `/bin/zsh -i`). It may carry flags, e.g. drop `-i` to skip `~/.zshrc` for zsh. Set it inline:
 
-Download the shell script:
+```sh
+DONOR_SHELL=/bin/zsh osx-env-sync sync
+```
 
-`curl https://raw.githubusercontent.com/ersiner/osx-env-sync/master/osx-env-sync.sh -o ~/.osx-env-sync.sh`
+Note that `install` writes the plist using the script's default; customize `DONOR_SHELL` inside the script before installing if you need a non-default donor.
 
-Make sure the shell script is executable:
+## How it works
 
-`chmod +x ~/.osx-env-sync.sh`
+1. On login, launchd runs the agent (installed via `launchctl bootstrap`).
+2. The agent executes `env -i <DONOR_SHELL> --login -c env`, capturing the login shell's environment with variables fully expanded.
+3. Each `NAME=value` line is fed to `launchctl setenv NAME value` via ruby, which handles quoting safely.
+4. Apps launched by the Dock/Finder afterwards inherit the published variables.
 
-Load the launch agent for current session:
+## Known limitations
 
-`launchctl load ~/Library/LaunchAgents/osx-env-sync.plist`
+- **Mid-session refresh and GUI apps:** on modern macOS, GUI apps launched by the Dock/Finder may not pick up `setenv` changes made mid-session. Running `sync` refreshes the session for launchd-spawned processes; already-running apps and some Dock-launched apps may need relaunch or a re-login.
+- **Things that mutate env in your shell:** whatever your startup files do also happens in the capture. E.g. `jenv init` unsets `JAVA_HOME` and lets its export hook re-set it — register your JDK with jenv if you rely on it.
+- Values containing unusual characters (multiline, etc.) may not survive the `env`/ruby round-trip cleanly.
 
-(Re)Launch a GUI application and verify that it can read the environment variables.
+## Sourcing order
 
-*The setup is persistent. It will survive restarts and relogins.*
-
-After the initial setup (that you just did), if you want to reflect any changes in your `~/.bash_profile` to your whole environment again, rerunning the `launchctl load ...` command won't perform what you want; instead you'll get a warning like the following:
-
-`<$HOME>/Library/LaunchAgents/osx-env-sync.plist: Operation already in progress`
-
-In order to reload your environment variables without going through the logout/login process, do the following:
-
-`launchctl unload ~/Library/LaunchAgents/osx-env-sync.plist`
-
-`launchctl load ~/Library/LaunchAgents/osx-env-sync.plist`
-
-If you want to automate this two step process with a script, download and make it executable (assuming you have a `~/bin` directory and its on your `$PATH` as in the example above):
-
-`curl https://raw.githubusercontent.com/ersiner/osx-env-sync/master/osx-env-sync-now -o ~/bin/osx-env-sync-now`
-
-`chmod +x ~/bin/osx-env-sync-now`
-
-And run the script whenever you want to reload your environment variables:
-
-`osx-env-sync-now`
-
-Finally make sure that you relaunch your already running applications (including Terminal.app) to make them aware of the changes.
-
-## Details
-
-On OS X, each Terminal.app session (window or tab) is accompanied with your configured login shell, `/bin/bash` by default. During login shell startup, the following files are sourced in order:
-
-- `/etc/profile`
-- `/etc/bashrc`
-- `~/.bash_profile`
-
-These files are sourced upon user login as well. But before these files, there is another type of script (well, there are others too) executed on behalf of the user: Launch Agents. **osx-env-sync** provides a launch agent which initializes a login shell *-achieved by passing `-l` parameter to `bash`-* so that `~/.bash_profile` is sourced in the first place and uses `launchctl` command to set environment variables for the whole user session. A shell script helps the launch agent by parsing `~/.bash_profile` *just for reading the names of the environment variables*; values of the variables are already effective in the launch agent execution environment as the shell script is run with a *login shell* by the agent.
-
-### More Details
-
-While `/etc/profile` is being sourced, `/usr/libexec/path_helper` program is executed to set initial values of `PATH` and `MANPATH` environment variables. The program processes `/etc/paths` file as well as `/etc/paths.d/` and `/etc/manpaths.d/` directories for bootstrapping the variables. You can also edit contents of these files and directories for system wide effect.
+A zsh login shell sources, in order: `/etc/zprofile`, `~/.zprofile`, then `~/.zlogin`. The `env` capture reflects whatever those files (plus `/etc/paths` via `path_helper`) produce. System-wide additions belong in `/etc/paths.d` or `/etc/manpaths.d`.
