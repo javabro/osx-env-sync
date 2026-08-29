@@ -1,0 +1,58 @@
+#!/usr/bin/env zsh
+# zsh and ruby are used for convenience, but both are shipped with macos, so no big deal
+
+DONOR_SHELL=${DONOR_SHELL:-"/bin/zsh -i"} # pick the shell you use in terminal and have your env configured in
+                                          # -i sources .zshrc (macos zsh users tend to keep env there); drop it for strict .zprofile-only capture
+SCRIPT=${0:A} # autodetect this script's absolute path
+ESCAPED_SCRIPT=${SCRIPT//&/&amp;}
+ESCAPED_SCRIPT=${ESCAPED_SCRIPT//</&lt;}
+ESCAPED_SCRIPT=${ESCAPED_SCRIPT//>/&gt;}
+PLIST=~/Library/LaunchAgents/osx-env-sync.plist
+LABEL=osx-env-sync
+DOMAIN=gui/$(id -u)
+
+write_plist() {
+    cat > $1 <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$ESCAPED_SCRIPT</string>
+    <string>sync</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+</dict>
+</plist>
+EOF
+}
+
+install() {
+    write_plist $PLIST
+    launchctl bootstrap $DOMAIN $PLIST
+}
+
+uninstall() {
+    launchctl bootout $DOMAIN/$LABEL
+    rm -f $PLIST
+}
+
+sync() {
+    # `--login -c` stanza is supported by all shells i checked: bash, zsh, fish, xonsh
+    # ${=DONOR_SHELL} word-splits so the override may carry flags (e.g. `-i` to source .zshrc)
+    env -i ${=DONOR_SHELL} --login -c env |
+        ruby -ne 'next unless $_ =~ /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/; system "launchctl", "setenv", $1, $2' # ruby saves us from fucking with escapes
+}
+
+case $1 in
+    install ) install;;
+    uninstall ) uninstall;;
+    reinstall ) uninstall; install;;
+    sync) sync;;
+esac
